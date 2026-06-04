@@ -1,0 +1,59 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  integration:
+    name: Integration tests (substrate)
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_ENDPOINT_URL: http://localhost:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.11'
+
+      - uses: julia-actions/cache@v2
+
+      - name: Install substrate
+        run: go install github.com/scttfrdmn/substrate/cmd/substrate@latest
+
+      - name: Start substrate server
+        run: substrate server --port 4566 &
+
+      - name: Wait for substrate health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:4566/v1/health > /dev/null 2>&1; then
+              echo "substrate is ready"
+              exit 0
+            fi
+            echo "Waiting for substrate... ($i/30)"
+            sleep 1
+          done
+          echo "substrate did not become healthy within 30s"
+          exit 1
+
+      - name: Instantiate project
+        run: julia --project -e 'import Pkg; Pkg.instantiate()'
+
+      - name: Run integration tests
+        env:
+          BURST_INTEGRATION_TEST: "1"
+        run: julia --project -e 'import Pkg; Pkg.test()'
