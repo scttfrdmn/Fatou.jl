@@ -11,10 +11,7 @@ Mirrors stet/tests/integration/map.test.ts and adder/tests/integration/test_sess
 
     try
         cfg = write_test_config(srv.url)
-        aws_config = global_aws_config(
-            region = "us-east-1",
-            creds  = AWSCredentials("test", "test"),
-        )
+        aws_config = srv.aws_config
 
         bucket = cfg.s3_bucket
         create_bucket(aws_config, bucket)

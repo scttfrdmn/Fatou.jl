@@ -39,7 +39,7 @@ end
 
 if haskey(ENV, "BURST_INTEGRATION_TEST")
     using AWS
-    using AWS: AWSCredentials, global_aws_config
+    using AWS
 
     include("integration/helpers.jl")
     include("integration/cloud_pmap_tests.jl")

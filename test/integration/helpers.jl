@@ -6,9 +6,25 @@ Pattern matches adder/tests/conftest.py and stet/tests/integration/helpers.ts.
 """
 
 using HTTP
+using Sockets
 using AWS
 using AWS: @service
 @service S3 use_response_type = true
+
+# AWS.jl does not support AWS_ENDPOINT_URL. Override generate_service_url to
+# redirect all API calls to the substrate emulator.
+struct SubstrateAWSConfig <: AWS.AbstractAWSConfig
+    endpoint::String
+    region::String
+    creds::AWS.AWSCredentials
+end
+
+AWS.region(c::SubstrateAWSConfig) = c.region
+AWS.credentials(c::SubstrateAWSConfig) = c.creds
+
+function AWS.generate_service_url(c::SubstrateAWSConfig, service::String, resource::String)
+    return string(c.endpoint, resource)
+end
 
 function require_integration()
     if !haskey(ENV, "BURST_INTEGRATION_TEST")
@@ -26,20 +42,25 @@ end
 struct SubstrateServer
     url::String
     process::Base.Process
+    aws_config::SubstrateAWSConfig
 end
 
 function start_substrate() :: SubstrateServer
     port = _free_port()
-    proc = run(`substrate server --port $port`; wait=false)
+    proc = run(`substrate server --address :$port`; wait=false)
     url = "http://localhost:$port"
 
     # Health check
-    deadline = time() + 10.0
+    deadline = time() + 30.0
     while time() < deadline
         try
-            resp = HTTP.get("$url/v1/health"; connect_timeout=1, readtimeout=1)
+            resp = HTTP.get("$url/health"; connect_timeout=1, readtimeout=1)
             if resp.status == 200
-                return SubstrateServer(url, proc)
+                aws_config = SubstrateAWSConfig(
+                    url, "us-east-1",
+                    AWS.AWSCredentials("test", "test"),
+                )
+                return SubstrateServer(url, proc, aws_config)
             end
         catch
         end
@@ -47,7 +68,7 @@ function start_substrate() :: SubstrateServer
     end
 
     kill(proc)
-    error("substrate server did not start within 10s on port $port")
+    error("substrate server did not start within 30s on port $port")
 end
 
 function stop_substrate(srv::SubstrateServer)
@@ -60,7 +81,7 @@ function reset_substrate(srv::SubstrateServer)
     nothing
 end
 
-function write_test_config(substrate_url::String) :: Config
+function write_test_config(substrate_url::String) :: Fatou.Config
     dir = mktempdir()
     path = joinpath(dir, "config.json")
     cfg_data = Dict(
@@ -79,15 +100,10 @@ function write_test_config(substrate_url::String) :: Config
         write(f, JSON3.write(cfg_data))
     end
     ENV["BURST_CONFIG_PATH"] = path
-    ENV["AWS_ENDPOINT_URL"] = substrate_url
-    ENV["AWS_ACCESS_KEY_ID"] = "test"
-    ENV["AWS_SECRET_ACCESS_KEY"] = "test"
-    ENV["AWS_DEFAULT_REGION"] = "us-east-1"
-
     Fatou.load_config()
 end
 
-function create_bucket(aws_config, bucket::String)
+function create_bucket(aws_config::AWS.AbstractAWSConfig, bucket::String)
     try
         S3.create_bucket(bucket; aws_config=aws_config)
     catch
@@ -102,8 +118,8 @@ Simulate ECS workers by writing result + status files directly to S3.
 Mirrors the adder test pattern: write what workers would write, let
 the polling loop discover the files naturally.
 """
-function simulate_workers(aws_config, bucket::String, session_id::String,
-                          items::Vector, fn::Function, n_workers::Int)
+function simulate_workers(aws_config::AWS.AbstractAWSConfig, bucket::String,
+                          session_id::String, items::Vector, fn::Function, n_workers::Int)
     chunks = Fatou.chunk_items(items, n_workers)
     for (i, chunk) in enumerate(chunks)
         results = [fn(item) for item in chunk]

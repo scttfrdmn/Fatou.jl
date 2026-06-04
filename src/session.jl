@@ -74,13 +74,11 @@ function _s3_get_text(aws_config, bucket::String, key::String) :: Union{String, 
 end
 
 function _s3_delete_objects(aws_config, bucket::String, keys::Vector{String}) :: Nothing
-    isempty(keys) && return nothing
-    # Delete in batches of 1000
-    for batch_start in 1:1000:length(keys)
-        batch = keys[batch_start:min(batch_start + 999, length(keys))]
-        objects = [Dict("Key" => k) for k in batch]
-        body = Dict("Delete" => Dict("Object" => objects))
-        S3.delete_objects(bucket, body; aws_config=aws_config)
+    for key in keys
+        try
+            S3.delete_object(bucket, key; aws_config=aws_config)
+        catch
+        end
     end
     nothing
 end

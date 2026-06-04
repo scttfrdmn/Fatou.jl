@@ -35,12 +35,12 @@ jobs:
         run: go install github.com/scttfrdmn/substrate/cmd/substrate@latest
 
       - name: Start substrate server
-        run: substrate server --port 4566 &
+        run: substrate server --address :4566 &
 
       - name: Wait for substrate health
         run: |
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:4566/v1/health > /dev/null 2>&1; then
+            if curl -sf http://localhost:4566/health > /dev/null 2>&1; then
               echo "substrate is ready"
               exit 0
             fi
