@@ -1,8 +1,8 @@
 """
 Integration test helpers for Fatou.jl.
-Uses substrate as an AWS emulator. Set BURST_INTEGRATION_TEST=1 to enable.
 
-Pattern matches adder/tests/conftest.py and stet/tests/integration/helpers.ts.
+Substrate (default): BURST_INTEGRATION_TEST=1
+Real AWS:            BURST_INTEGRATION_TEST=1  (with real AWS credentials, no AWS_ENDPOINT_URL)
 """
 
 using HTTP
@@ -11,8 +11,10 @@ using AWS
 using AWS: @service
 @service S3 use_response_type = true
 
-# AWS.jl does not support AWS_ENDPOINT_URL. Override generate_service_url to
-# redirect all API calls to the substrate emulator.
+using_real_aws() = get(ENV, "BURST_USE_REAL_AWS", "") != ""
+
+# AWS.jl does not support AWS_ENDPOINT_URL. When using substrate, override
+# generate_service_url to redirect all API calls to the emulator.
 struct SubstrateAWSConfig <: AWS.AbstractAWSConfig
     endpoint::String
     region::String
@@ -40,17 +42,22 @@ function _free_port() :: Int
 end
 
 struct SubstrateServer
-    url::String
-    process::Base.Process
-    aws_config::SubstrateAWSConfig
+    url::Union{String, Nothing}
+    process::Union{Base.Process, Nothing}
+    aws_config::AWS.AbstractAWSConfig
 end
 
 function start_substrate() :: SubstrateServer
+    if using_real_aws()
+        cfg = Fatou.load_config()
+        aws_config = global_aws_config(region=cfg.region)
+        return SubstrateServer(nothing, nothing, aws_config)
+    end
+
     port = _free_port()
     proc = run(`substrate server --address :$port`; wait=false)
     url = "http://localhost:$port"
 
-    # Health check
     deadline = time() + 30.0
     while time() < deadline
         try
@@ -72,16 +79,24 @@ function start_substrate() :: SubstrateServer
 end
 
 function stop_substrate(srv::SubstrateServer)
-    kill(srv.process)
-    wait(srv.process)
+    if srv.process !== nothing
+        kill(srv.process)
+        wait(srv.process)
+    end
 end
 
 function reset_substrate(srv::SubstrateServer)
-    HTTP.post("$(srv.url)/v1/state/reset")
+    if srv.url !== nothing
+        HTTP.post("$(srv.url)/v1/state/reset")
+    end
     nothing
 end
 
-function write_test_config(substrate_url::String) :: Fatou.Config
+function write_test_config(srv::SubstrateServer) :: Fatou.Config
+    if using_real_aws()
+        return Fatou.load_config()
+    end
+
     dir = mktempdir()
     path = joinpath(dir, "config.json")
     cfg_data = Dict(
@@ -100,6 +115,10 @@ function write_test_config(substrate_url::String) :: Fatou.Config
         write(f, JSON3.write(cfg_data))
     end
     ENV["BURST_CONFIG_PATH"] = path
+    ENV["AWS_ENDPOINT_URL"] = srv.url
+    ENV["AWS_ACCESS_KEY_ID"] = "test"
+    ENV["AWS_SECRET_ACCESS_KEY"] = "test"
+    ENV["AWS_DEFAULT_REGION"] = "us-east-1"
     Fatou.load_config()
 end
 
@@ -111,13 +130,6 @@ function create_bucket(aws_config::AWS.AbstractAWSConfig, bucket::String)
     end
 end
 
-"""
-    simulate_workers(aws_config, bucket, session_id, items, fn, n_workers)
-
-Simulate ECS workers by writing result + status files directly to S3.
-Mirrors the adder test pattern: write what workers would write, let
-the polling loop discover the files naturally.
-"""
 function simulate_workers(aws_config::AWS.AbstractAWSConfig, bucket::String,
                           session_id::String, items::Vector, fn::Function, n_workers::Int)
     chunks = Fatou.chunk_items(items, n_workers)
@@ -127,12 +139,9 @@ function simulate_workers(aws_config::AWS.AbstractAWSConfig, bucket::String,
         idx = i - 1
         tid = Fatou.task_id(idx)
 
-        result_key = "sessions/$session_id/tasks/$tid.result"
-        status_key = "sessions/$session_id/tasks/$tid.status"
-
-        S3.put_object(bucket, result_key,
+        S3.put_object(bucket, "sessions/$session_id/tasks/$tid.result",
             Dict("body" => result_data); aws_config=aws_config)
-        S3.put_object(bucket, status_key,
+        S3.put_object(bucket, "sessions/$session_id/tasks/$tid.status",
             Dict("body" => Vector{UInt8}("done")); aws_config=aws_config)
     end
 end

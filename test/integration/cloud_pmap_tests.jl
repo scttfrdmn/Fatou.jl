@@ -10,7 +10,7 @@ Mirrors stet/tests/integration/map.test.ts and adder/tests/integration/test_sess
     srv = start_substrate()
 
     try
-        cfg = write_test_config(srv.url)
+        cfg = write_test_config(srv)
         aws_config = srv.aws_config
 
         bucket = cfg.s3_bucket
