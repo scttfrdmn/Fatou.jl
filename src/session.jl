@@ -74,6 +74,8 @@ function _s3_get_text(aws_config, bucket::String, key::String) :: Union{String, 
 end
 
 function _s3_delete_objects(aws_config, bucket::String, keys::Vector{String}) :: Nothing
+    # TODO: restore batch delete_objects once substrate #318 is fixed
+    # (GetObject does not 404 on delete markers after DeleteObjects)
     for key in keys
         try
             S3.delete_object(bucket, key; aws_config=aws_config)
