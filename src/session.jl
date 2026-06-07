@@ -115,7 +115,8 @@ function Session(;
     Session(cfg, workers, cpu, memory_gb, backend, spot, max_cost, cost_alert, timeout, arch)
 end
 
-function run!(session::Session, items::Vector, fn::Function, image_uri::String) :: Vector
+function run!(session::Session, items::Vector, fn::Function, image_uri::String;
+              on_error=nothing) :: Vector
     isempty(items) && return []
 
     cfg = session.cfg
@@ -196,8 +197,20 @@ function run!(session::Session, items::Vector, fn::Function, image_uri::String) 
 
     # Poll until done
     deadline = session.timeout !== nothing ? start_time + session.timeout : nothing
-    _poll_until_done!(session, aws_config, cfg.s3_bucket, session_id, chunk_count,
-                      start_time, deadline)
+    poll_result = _poll_until_done!(session, aws_config, cfg.s3_bucket, session_id, chunk_count,
+                                    start_time, deadline; on_error=on_error)
+
+    elapsed = time() - start_time
+    print_completed("$(round(elapsed, digits=1))s")
+    actual_cost = estimate_cost(session.cpu, session.memory_gb, actual_workers, elapsed / 3600)
+    print_actual_cost(actual_cost)
+
+    _cleanup_tasks!(aws_config, cfg.s3_bucket, session_id, chunk_count)
+
+    # Tolerant mode: _poll_until_done! returned assembled results directly
+    if poll_result !== nothing
+        return vcat(poll_result...)
+    end
 
     # Download results in parallel
     results_chunks = Vector{Vector}(undef, chunk_count)
@@ -207,13 +220,6 @@ function run!(session::Session, items::Vector, fn::Function, image_uri::String) 
             results_chunks[i] = data === nothing ? [] : deserialize_result(data)
         end
     end
-
-    elapsed = time() - start_time
-    print_completed("$(round(elapsed, digits=1))s")
-    actual_cost = estimate_cost(session.cpu, session.memory_gb, actual_workers, elapsed / 3600)
-    print_actual_cost(actual_cost)
-
-    _cleanup_tasks!(aws_config, cfg.s3_bucket, session_id, chunk_count)
 
     vcat(results_chunks...)
 end
@@ -307,7 +313,8 @@ end
 
 function _poll_until_done!(session::Session, aws_config, bucket::String, session_id::String,
                            chunk_count::Int, start_time::Float64,
-                           deadline::Union{Float64, Nothing})
+                           deadline::Union{Float64, Nothing};
+                           on_error=nothing)
     while true
         if deadline !== nothing && time() > deadline
             elapsed = time() - start_time
@@ -335,9 +342,19 @@ function _poll_until_done!(session::Session, aws_config, bucket::String, session
                         errors[i + 1] = BurstError(something(err_msg, "unknown error"))
                     end
                 end
-                throw(BurstPartialError(results, errors))
+                if on_error !== nothing
+                    # Tolerant mode: map failed chunks through on_error instead of throwing
+                    for i in 1:chunk_count
+                        if errors[i] !== nothing
+                            results[i] = [on_error(ErrorException(errors[i].message))]
+                        end
+                    end
+                    return results
+                else
+                    throw(BurstPartialError(results, errors))
+                end
             end
-            return
+            return nothing
         end
 
         sleep(2.0)

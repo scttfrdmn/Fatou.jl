@@ -91,7 +91,7 @@ const VERSION = "0.1.0"
 
 """
     cloud_pmap(f, items; workers, cpu, memory, backend, spot,
-               max_cost, cost_alert, timeout, region, arch) -> Vector
+               max_cost, cost_alert, timeout, region, arch, on_error) -> Vector
 
 Cloud-burst `f` over `items` using AWS ECS Fargate workers.
 Drop-in replacement for `pmap(f, items)`.
@@ -109,10 +109,17 @@ Drop-in replacement for `pmap(f, items)`.
 - `timeout=nothing`: timeout in seconds
 - `region=nothing`: AWS region override
 - `arch="amd64"`: CPU architecture (`"amd64"` or `"arm64"` for Graviton)
+- `on_error=nothing`: handler called with the exception for each failed item; its
+  return value is used as that item's result. When set, `BurstPartialError` is
+  never thrown. Matches the convention of Julia's stdlib `pmap`.
 
 # Example
 ```julia
+# Strict mode (default): throws BurstPartialError on any failure
 results = cloud_pmap(x -> x^2, 1:1000, workers=50)
+
+# Tolerant mode: failed items become `missing`
+results = cloud_pmap(f, items; on_error = e -> missing)
 ```
 """
 function cloud_pmap(
@@ -128,6 +135,7 @@ function cloud_pmap(
     timeout::Union{Int, Nothing} = nothing,
     region::Union{String, Nothing} = nothing,
     arch::String = "amd64",
+    on_error = nothing,
 ) :: Vector
     cfg = load_config()
     if region !== nothing
@@ -149,7 +157,7 @@ function cloud_pmap(
         arch      = arch,
     )
 
-    run!(session, collect(items), f, image_uri)
+    run!(session, collect(items), f, image_uri; on_error=on_error)
 end
 
 end # module Fatou

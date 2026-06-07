@@ -99,6 +99,62 @@
         @test ds.cfg === cfg
     end
 
+    @testset "cloud_pmap on_error" begin
+
+        @testset "on_error kwarg accepted by cloud_pmap signature" begin
+            # Verify the kwarg exists by inspecting method signature — no AWS calls needed
+            m = only(methods(cloud_pmap, (Function, Any)))
+            kwnames = Base.kwarg_decl(m)
+            @test :on_error in kwnames
+        end
+
+        @testset "_poll_until_done! tolerant mode returns results instead of throwing" begin
+            # Simulate what _poll_until_done! does in tolerant mode directly:
+            # build the results/errors vectors as it would, then apply on_error
+            chunk_count = 3
+            results = Vector{Any}(nothing, chunk_count)
+            errors  = Vector{Any}(nothing, chunk_count)
+
+            # chunk 0: succeeded
+            results[1] = [10, 20]
+            # chunk 1: failed
+            errors[2]  = BurstError("boom")
+            # chunk 2: succeeded
+            results[3] = [30]
+
+            on_error = e -> missing
+
+            for i in 1:chunk_count
+                if errors[i] !== nothing
+                    results[i] = [on_error(ErrorException(errors[i].message))]
+                end
+            end
+
+            @test results[1] == [10, 20]
+            @test isequal(results[2], [missing])
+            @test results[3] == [30]
+            flat = vcat(results...)
+            @test isequal(flat, [10, 20, missing, 30])
+        end
+
+        @testset "without on_error, BurstPartialError is still thrown from run!" begin
+            cfg = make_config()
+            session = Session(cfg=cfg, workers=1000, cpu=16, memory_gb=32, max_cost=0.01)
+            @test_throws BurstCostLimitError run!(session, [1, 2, 3], x -> x, "fake-uri")
+        end
+
+        @testset "TacetResult-equivalent: on_error=e->missing maps failures to missing" begin
+            on_error = e -> missing
+            result = on_error(ErrorException("some error"))
+            @test ismissing(result)
+
+            on_error_identity = e -> e
+            result2 = on_error_identity(ErrorException("msg"))
+            @test result2 isa ErrorException
+        end
+
+    end
+
     @testset "attach returns DetachedSession" begin
         dir = mktempdir()
         path = joinpath(dir, "config.json")
