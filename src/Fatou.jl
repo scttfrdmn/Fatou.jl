@@ -91,7 +91,7 @@ const VERSION = "0.1.0"
 
 """
     cloud_pmap(f, items; workers, cpu, memory, backend, spot,
-               max_cost, cost_alert, timeout, region) -> Vector
+               max_cost, cost_alert, timeout, region, arch) -> Vector
 
 Cloud-burst `f` over `items` using AWS ECS Fargate workers.
 Drop-in replacement for `pmap(f, items)`.
@@ -108,6 +108,7 @@ Drop-in replacement for `pmap(f, items)`.
 - `cost_alert=nothing`: warn when cost approaches threshold (USD/hr)
 - `timeout=nothing`: timeout in seconds
 - `region=nothing`: AWS region override
+- `arch="amd64"`: CPU architecture (`"amd64"` or `"arm64"` for Graviton)
 
 # Example
 ```julia
@@ -126,6 +127,7 @@ function cloud_pmap(
     cost_alert::Union{Float64, Nothing} = nothing,
     timeout::Union{Int, Nothing} = nothing,
     region::Union{String, Nothing} = nothing,
+    arch::String = "amd64",
 ) :: Vector
     cfg = load_config()
     if region !== nothing
@@ -144,6 +146,7 @@ function cloud_pmap(
         max_cost  = max_cost,
         cost_alert = cost_alert,
         timeout   = timeout,
+        arch      = arch,
     )
 
     run!(session, collect(items), f, image_uri)

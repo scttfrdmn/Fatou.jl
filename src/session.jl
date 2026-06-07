@@ -97,6 +97,7 @@ mutable struct Session
     max_cost::Union{Float64, Nothing}
     cost_alert::Union{Float64, Nothing}
     timeout::Union{Int, Nothing}
+    arch::String
 end
 
 function Session(;
@@ -109,8 +110,9 @@ function Session(;
     max_cost::Union{Float64, Nothing} = nothing,
     cost_alert::Union{Float64, Nothing} = nothing,
     timeout::Union{Int, Nothing} = nothing,
+    arch::String = "amd64",
 )
-    Session(cfg, workers, cpu, memory_gb, backend, spot, max_cost, cost_alert, timeout)
+    Session(cfg, workers, cpu, memory_gb, backend, spot, max_cost, cost_alert, timeout, arch)
 end
 
 function run!(session::Session, items::Vector, fn::Function, image_uri::String) :: Vector
@@ -216,9 +218,46 @@ function run!(session::Session, items::Vector, fn::Function, image_uri::String) 
     vcat(results_chunks...)
 end
 
+function _register_task_definition(aws_config, session::Session, cfg, session_id::String,
+                                    image_uri::String) :: String
+    params = Dict(
+        "family" => "burst-$(session_id)",
+        "taskRoleArn" => cfg.task_role_arn,
+        "executionRoleArn" => cfg.execution_role_arn,
+        "networkMode" => "awsvpc",
+        "requiresCompatibilities" => ["FARGATE"],
+        "cpu" => string(session.cpu * 1024),
+        "memory" => string(session.memory_gb * 1024),
+        "runtimePlatform" => Dict(
+            "cpuArchitecture" => session.arch == "arm64" ? "ARM64" : "X86_64",
+            "operatingSystemFamily" => "LINUX",
+        ),
+        "containerDefinitions" => [Dict(
+            "name" => "burst-worker",
+            "image" => image_uri,
+            "essential" => true,
+            "environment" => [
+                Dict("name" => "BURST_LANG", "value" => "julia"),
+            ],
+            "logConfiguration" => Dict(
+                "logDriver" => "awslogs",
+                "options" => Dict(
+                    "awslogs-group" => "/burst/workers",
+                    "awslogs-region" => cfg.region,
+                    "awslogs-stream-prefix" => "burst",
+                    "awslogs-create-group" => "true",
+                ),
+            ),
+        )],
+    )
+    resp = ECS.register_task_definition(params; aws_config=aws_config)
+    return resp["taskDefinition"]["taskDefinitionArn"]
+end
+
 function _launch_workers!(session::Session, aws_config, session_id::String,
                            image_uri::String, chunk_count::Int)
     cfg = session.cfg
+    task_def_arn = _register_task_definition(aws_config, session, cfg, session_id, image_uri)
     for i in 0:(chunk_count - 1)
         tid = task_id(i)
         overrides = Dict(
@@ -236,7 +275,7 @@ function _launch_workers!(session::Session, aws_config, session_id::String,
         )
         params = Dict(
             "cluster" => cfg.ecs_cluster,
-            "taskDefinition" => image_uri,
+            "taskDefinition" => task_def_arn,
             "launchType" => uppercase(session.backend),
             "overrides" => overrides,
         )
